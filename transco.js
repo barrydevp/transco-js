@@ -164,11 +164,3 @@ class Participant {
     return session.client.partialCommit(session.id, body, this)
   }
 }
-
-setImmediate(async () => {
-  const client = new Client('http://localhost:8000')
-  await client.connect()
-
-  console.log(client.conn.leader)
-  console.log(client.conn.rsconf)
-})

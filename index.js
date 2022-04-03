@@ -1,1 +1,1 @@
-module.export = require('./transco')
+module.exports = require('./transco')
