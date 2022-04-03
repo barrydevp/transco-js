@@ -30,29 +30,29 @@ class Client {
   }
 
   async SessionFromId(sessionId) {
-    const resp = await this.conn.request(
+    const data = await this.conn.request(
       (rest) => rest.get(this.v1SessionPath() + '/' + sessionId)
     )
 
-    return new Session(this, resp.data)
+    return new Session(this, data)
   }
 
   async StartSession() {
-    const resp = await this.conn.request(
+    const data = await this.conn.request(
       (rest) => rest.post(this.v1SessionPath())
     )
 
-    return new Session(this, resp.data)
+    return new Session(this, data)
   }
 
   async joinSession(sessionId, body, session) {
-    const resp = await this.conn.request(
+    const data = await this.conn.request(
       (rest) => rest.post(this.v1SessionPath() + '/' + sessionId + '/join', {
         json: body
       })
     )
 
-    return new Participant(session, resp.data)
+    return new Participant(session, data)
   }
 
   async JoinSession(sessionId, body) {
@@ -60,13 +60,13 @@ class Client {
   }
 
   async partialCommit(sessionId, body, participant) {
-    const resp = await this.conn.request(
+    const data = await this.conn.request(
       (rest) => rest.post(this.v1SessionPath() + '/' + sessionId + '/partial-commit', {
         json: body
       })
     )
 
-    participant.fromData(resp.data)
+    participant.fromData(data)
 
     return participant
   }
@@ -76,11 +76,11 @@ class Client {
   }
 
   async commitSession(sessionId, session) {
-    const resp = await this.conn.request(
+    const data = await this.conn.request(
       (rest) => rest.post(this.v1SessionPath() + '/' + sessionId + '/commit')
     )
 
-    session.fromData(resp.data)
+    session.fromData(data)
 
     return session
   }
@@ -90,11 +90,11 @@ class Client {
   }
 
   async abortSession(sessionId, session) {
-    const resp = await this.conn.request(
+    const data = await this.conn.request(
       (rest) => rest.post(this.v1SessionPath() + '/' + sessionId + '/abort')
     )
 
-    session.fromData(resp.data)
+    session.fromData(data)
 
     return session
   }
