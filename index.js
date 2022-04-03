@@ -1,1 +1,1 @@
-module.export = require('./transco').Client
+module.export = require('./transco')
