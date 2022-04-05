@@ -1,11 +1,21 @@
 const { Client } = require('./index')
-
+const { _delay, ErrorWrapRetryable, IsRetryableErr } = require('./helper')
 
 setImmediate(async () => {
-  const client = new Client('http://localhost:8001')
+  const client = new Client('http://localhost:8001,localhost:8002,localhost:8003')
   await client.connect()
 
   // console.log(client.conn.leader)
   // console.log(client.conn.rsconf)
-  console.log(await client.SessionFromId("a2037b19-3c5d-4554-ac57-cc63d77bdb2f"))
+  while (true) {
+    try {
+      await client.SessionFromId("55231414-3acd-4ddb-a45c-5505c056eed0")
+      console.log(client.conn.leader)
+    } catch (err) {
+      console.log('isertry', IsRetryableErr(err))
+      console.log(err)
+    }
+
+    await _delay(1000)
+  }
 })

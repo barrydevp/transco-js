@@ -1,11 +1,8 @@
 const got = require('got')
-
-const _delay = (ms) => new Promise((rs) => {
-  setTimeout(rs, ms)
-})
+const { _delay, ErrorWrapRetryable, IsRetryableErr, ParseUri } = require('./helper')
 
 const constants = {
-  ErrNotLeader: new Error('not leader'),
+  NewErrNotLeader: () => ErrorWrapRetryable(new Error('not leader')),
   SchemeHttp: "http",
   SchemeHttps: "https",
   DefaultPort: "8000",
@@ -25,16 +22,24 @@ class Node {
       responseType: 'json',
       // json: {},
     })
+    this.perish()
   }
 
   async init() {
     const nconf = await this.nconf()
     this.conf = nconf
+    this.available = true
+  }
+
+  perish() {
+    this.conf = null
+    this.available = false
   }
 
   async nconf() {
     const nconf = await this._request(
-      (rest) => rest.get(constants.SysPrefixApiPath + "/nconf")
+      (rest) => rest.get(constants.SysPrefixApiPath + "/nconf"),
+      true
     )
 
     return nconf
@@ -42,7 +47,8 @@ class Node {
 
   async rsconf() {
     const rsconf = await this._request(
-      (rest) => rest.get(constants.SysPrefixApiPath + "/rsconf")
+      (rest) => rest.get(constants.SysPrefixApiPath + "/rsconf"),
+      true
     )
 
     return rsconf
@@ -50,13 +56,18 @@ class Node {
 
   async ping() {
     await this._request(
-      (rest) => rest.get(constants.SysPrefixApiPath + "/ping")
+      (rest) => rest.get(constants.SysPrefixApiPath + "/ping"),
+      true
     )
 
     return true
   }
 
-  async _request(fn) {
+  async _request(fn, ignoreReady) {
+    // if (!ignoreReady && !this.available) {
+    //   throw constants.NewErrNotLeader()
+    // }
+
     try {
       const resp = await fn(this.rest)
       return resp.data
@@ -64,11 +75,13 @@ class Node {
       const resp = err.response
       if (resp) {
         if (resp.body.err && resp.body.err.includes('node is not the leader')) {
-          throw constants.ErrNotLeader
+          throw constants.NewErrNotLeader()
         }
         throw new Error(`non 200 status: ${resp.statusCode}, msg: ${resp.body.msg}, err: ${resp.body.err}`)
       }
-      throw err
+      // cannot request to node, so we will make this node perished
+      this.perish()
+      throw ErrorWrapRetryable(err)
     }
   }
 }
@@ -79,9 +92,11 @@ class ConnString {
       uri = "http://localhost" + constants.DefaultPort
     }
     this.uri = uri
-    const u = new URL(uri)
+    // const u = new URL(uri)
+    const u = ParseUri(uri)
     this.url = u
-    const scheme = u.protocol.replace(':', '')
+    // const scheme = u.protocol.replace(':', '')
+    const scheme = u.scheme
     if (scheme !== constants.SchemeHttp && scheme !== constants.SchemeHttps) {
       throw new Error("scheme must be \"http\" or \"https\"")
     }
@@ -111,47 +126,122 @@ class Connection {
     await this.loadCluster()
   }
 
+  // this function is not thread safe
+  // (concurrent run may lead to unexpected behavior)
   async loadNodes() {
-    const cs = this.connStr
-    const nodes = await Promise.all(cs.hosts.map(async (host) => {
-      const baseURL = cs.getBaseURL(host)
-      const n = new Node(baseURL)
-      await n.init()
-      return n
-    }))
+    // act like mutex
+    if (!this.loadingNodes) {
+      const load = async () => {
+        const cs = this.connStr
+        let nodes = this.nodes
 
-    this.nodes = nodes
+        if (!nodes || nodes.length !== cs.hosts.length) {
+          // this is a first time call loadNodes()
+          nodes = cs.hosts.map((host) => {
+            const baseURL = cs.getBaseURL(host)
+            const n = new Node(baseURL)
+            return n
+          })
+        }
 
-    return true
+        await Promise.all(nodes.map(async (n) => {
+          if (!n.isAvailable) {
+            await n.init().catch((err) => {
+              console.log(`init node ${n.baseUrl} failed: ${err.message}`)
+            })
+          }
+        }))
+
+        this.nodes = nodes
+        return true
+      }
+
+      this.loadingNodes = load()
+    }
+
+    return this.loadingNodes.finally(() => { this.loadingNodes = null })
   }
 
+  _reset() {
+    this.rsconf = null
+    this.leader = null
+  }
+
+  // this function is not thread safe
+  // (concurrent run may lead to unexpected behavior)
   async loadCluster() {
-    if (!Array.isArray(this.nodes) || this.nodes.lenth) {
-      throw new Error('empty nodes')
+    // act like mutex
+    if (!this.loadingCluster) {
+      const load = async () => {
+        if (!Array.isArray(this.nodes) || this.nodes.lenth) {
+          throw new Error('empty nodes')
+        }
+
+        let err = null
+        // fetch rsconf
+        for (const node of this.nodes) {
+          // const firstNode = this.nodes[0]
+          try {
+            const rsconf = await node.rsconf()
+            this.rsconf = rsconf
+            err = null
+            break
+          } catch (error) {
+            err = error
+          }
+        }
+
+        if (err !== null) {
+          throw err
+        }
+
+        // populate leader
+        const leaderConf = this.rsconf.Leader
+        if (!leaderConf) {
+          throw new Error('no leader')
+        }
+
+        let leader = this._findLeaderNode(leaderConf)
+        if (!leader) {
+          const unAvailNodes = this._unAvailableNodes()
+
+          if (unAvailNodes.length < this.nodes.length) {
+            // it mean the leader is ready at this time, 
+            // so we should try to init unavail node 
+            // and find the leader one more time
+            await this.loadNodes()
+            leader = this._findLeaderNode(leaderConf)
+          }
+        }
+
+        if (!leader) {
+          throw new Error('cannot found leader in uri')
+        }
+
+        this.leader = leader
+
+        return true
+      }
+
+      this.loadingCluster = load()
     }
 
-    // fetch rsconf
-    const firstNode = this.nodes[0]
-    const rsconf = await firstNode.rsconf()
-    this.rsconf = rsconf
+    return this.loadingCluster.finally(() => { this.loadingCluster = null })
+  }
 
-    // populate leader
-    const leaderConf = rsconf.Leader
-    if (!leaderConf) {
-      throw new Error('no leader')
-    }
+  _unAvailableNodes() {
+    return this.nodes.filter(n => n.isAvailable)
+  }
 
-    const leader = this.nodes.find((n) => {
+  // find leader in nodes list by leader config
+  _findLeaderNode(leaderConf) {
+    return this.nodes.find((n) => {
+      if (!n.conf) {
+        return false
+      }
       return n.conf.Host === leaderConf.Host && n.conf.ID === leaderConf.ID
     })
 
-    if (!leader) {
-      throw new Error('cannot found leader in uri')
-    }
-
-    this.leader = leader
-
-    return true
   }
 
   async request(fn) {
@@ -165,7 +255,7 @@ class Connection {
 
     await exec()
     let retries = 0
-    while (retries < constants.MaxRetry && err === constants.ErrNotLeader) {
+    while (retries < constants.MaxRetry && IsRetryableErr(err)) {
       // handle change leader by reload cluster
       await this.loadCluster()
       err = null
