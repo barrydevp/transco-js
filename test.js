@@ -8,9 +8,9 @@ setImmediate(async () => {
   // console.log(client.conn.leader)
   // console.log(client.conn.rsconf)
   while (true) {
+    console.log(client.conn.leader)
     try {
       await client.SessionFromId("55231414-3acd-4ddb-a45c-5505c056eed0")
-      console.log(client.conn.leader)
     } catch (err) {
       console.log('isertry', IsRetryableErr(err))
       console.log(err)
